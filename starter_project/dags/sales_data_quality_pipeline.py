@@ -5,27 +5,38 @@ from pathlib import Path
 import sys
 
 try:
-    from airflow import DAG
-    from airflow.operators.python import PythonOperator
+    from airflow.sdk import DAG
+    from airflow.providers.standard.operators.python import PythonOperator
 except ImportError:  # pragma: no cover
-    DAG = None
+    try:
+        from airflow import DAG
+        from airflow.operators.python import PythonOperator
+    except ImportError:
+        DAG = None
+        PythonOperator = None
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 
-def validate_orders_task() -> dict:
-    """
-    TODO:
-    1. Import config values.
-    2. Read the input CSV.
-    3. Validate the rows.
-    4. Write the JSON summary.
-    5. Send the Discord alert.
-    6. Raise an error on failed validation.
-    """
-    raise NotImplementedError
+def validate_orders_task(**context) -> dict:
+    from src.config import AIRFLOW_INPUT_FILE, SUMMARY_FILE
+    from src.validation import run_lab_check
+
+    dag_run = context.get("dag_run")
+    dag_conf = dag_run.conf if dag_run and dag_run.conf else {}
+    input_file = Path(dag_conf.get("input_file", AIRFLOW_INPUT_FILE)).expanduser()
+    if not input_file.is_absolute():
+        project_relative = PROJECT_ROOT / input_file
+        input_file = project_relative if project_relative.exists() else input_file.resolve()
+
+    return run_lab_check(
+        input_path=input_file,
+        output_path=SUMMARY_FILE,
+        allow_failure=False,
+        skip_discord=False,
+    )
 
 
 if DAG is not None:

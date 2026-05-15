@@ -3,7 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from urllib import request
+from urllib import error, request
 
 from src.config import DISCORD_WEBHOOK_URL, OUTPUT_DIR, VALID_STATUSES
 
@@ -59,12 +59,18 @@ def write_summary(summary: dict[str, int | str], output_path: str | Path) -> Pat
     return output_file
 
 
-def send_discord_message(summary: dict[str, int | str], webhook_url: str = DISCORD_WEBHOOK_URL) -> None:
+def send_discord_message(
+    summary: dict[str, int | str],
+    webhook_url: str = DISCORD_WEBHOOK_URL,
+    dataset_name: str | None = None,
+) -> None:
     if not webhook_url:
         return
 
+    dataset_line = f"Dataset: {dataset_name}\n" if dataset_name else ""
     message = (
         f"Sales Data Quality {summary['validation_status'].upper()}\n"
+        f"{dataset_line}"
         f"Rows: {summary['row_count']}\n"
         f"Missing customer_id: {summary['missing_customer_ids']}\n"
         f"Invalid amounts: {summary['invalid_amounts']}\n"
@@ -74,12 +80,25 @@ def send_discord_message(summary: dict[str, int | str], webhook_url: str = DISCO
     http_request = request.Request(
         webhook_url,
         data=payload,
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "sales-data-quality-lab/1.0",
+        },
         method="POST",
     )
-    with request.urlopen(http_request, timeout=15) as response:
-        if response.status >= 400:
-            raise RuntimeError(f"Discord webhook failed with status {response.status}")
+    try:
+        with request.urlopen(http_request, timeout=15) as response:
+            if response.status >= 400:
+                raise RuntimeError(f"Discord webhook failed with status {response.status}")
+    except error.HTTPError as exc:
+        response_body = exc.read().decode("utf-8", errors="replace").strip()
+        detail = f": {response_body}" if response_body else ""
+        raise RuntimeError(
+            f"Discord webhook failed with HTTP {exc.code}. "
+            "Check that DISCORD_WEBHOOK_URL is the full webhook URL for an existing Discord channel"
+            f"{detail}"
+        ) from exc
 
 
 def run_lab_check(
@@ -93,7 +112,7 @@ def run_lab_check(
     output_file = write_summary(summary, output_path or (OUTPUT_DIR / "validation_summary.json"))
 
     if not skip_discord:
-        send_discord_message(summary)
+        send_discord_message(summary, dataset_name=Path(input_path).name)
 
     if summary["validation_status"] == "failed" and not allow_failure:
         raise LabValidationError(f"Validation failed. Summary saved to {output_file}")
